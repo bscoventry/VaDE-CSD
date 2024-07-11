@@ -15,97 +15,78 @@ from torch.utils.data import Dataset
 N_CLASSES = 8
 PLOT_NUM_PER_CLASS = 128
 if __name__ == "__main__":
-
+    def addLabelsToDF(df):
+        EPP = df.EnergyPerPulse.values
+        nRows = len(EPP)
+        labels = np.zeros((nRows,))
+        for ck in range(nRows):
+            if EPP[ck] <0.5:
+                labels[ck] = 0
+            elif 0.5<= EPP[ck] < 1: 
+                labels[ck] = 1
+            elif 1<= EPP[ck] < 1.5: 
+                labels[ck] = 2
+            elif 1.5<= EPP[ck] < 2: 
+                labels[ck] = 3
+            elif 2<= EPP[ck] < 2.5: 
+                labels[ck] = 4
+            elif 2.5<= EPP[ck] < 3: 
+                labels[ck] = 5
+            elif 3<= EPP[ck] < 3.5: 
+                labels[ck] = 6
+            elif EPP[ck]>=3.5: 
+                labels[ck] = 7
+        df['labels'] = labels
+        return df
+    
     class CSDDataset(Dataset):
-        def __init__(self, annotations_file, source_or_sink, transform=None, target_transform=None):
-            self.df = pd.read_pickle(annotations_file)
-            EPP = self.df.EnergyPerPulse.values
-            self.sourcesink = source_or_sink
-            self.transform = transform
-            self.target_transform = target_transform
-            nRows = self.df.shape[0]
-            labels = []
-            for ck in range(nRows):
-                if EPP[ck] <0.5:
-                    labels.append(0)
-                elif 0.5<= EPP[ck] < 1: 
-                    labels.append(1)
-                elif 1<= EPP[ck] < 1.5: 
-                    labels.append(2)
-                elif 1.5<= EPP[ck] < 2: 
-                    labels.append(3)
-                elif 2<= EPP[ck] < 2.5: 
-                    labels.append(4)
-                elif 2.5<= EPP[ck] < 3: 
-                    labels.append(5)
-                elif 3<= EPP[ck] < 3.5: 
-                    labels.append(6)
-                elif EPP[ck]>=3.5: 
-                    labels.append(7)
-            self.img_labels = labels   
+        if __name__ == '__main__':
+            def __init__(self, df, transform=None, target_transform=None):
+                self.df = df
 
-        def __len__(self):
-            return len(self.img_labels)
+            def __len__(self):
+                return len(self.df)
 
-        def __getitem__(self, idx):
-            #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
-            #image = read_image(img_path)
-            if self.sourcesink == 1:
-                image = self.df.Sinks[idx]
-            else:
-                image = self.df.Sources[idx]
-            label = self.img_labels[idx]
-            if self.transform:
-                image = self.transform(image)
-            if self.target_transform:
-                label = self.target_transform(label)
-            return image, label
+            def __getitem__(self, idx):
+                #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
+                #image = read_image(img_path)
+                
+                label = self.df.labels.iloc[idx]
+                if self.transform:
+                    image = self.transform(image).reshape(1,101,101)
+                if self.target_transform:
+                    label = self.target_transform(label)
+                return image, label
     
     class CSD_Dataloader(torch.utils.data.Dataset):
-        def __init__(self, CSDDF,source_or_sink):
-            self.df = pd.read_pickle(CSDDF)
-            if source_or_sink==1:
-                self.CSD = self.df['Sinks']
-            else:
-                self.CSD = self.df['Sources']
-           
-            self.EPP = self.df['EnergyPerPulse']
-        # get sample
-        def __getitem__(self, idx):
-            CSD_item = self.CSD[idx]
-            EPP = self.EPP[idx]
-            #scale data to 0 and 1
-            Cmin = np.min(CSD_item)
-            Cmax = np.max(CSD_item)
-            CSD_item = (CSD_item-Cmin)/(Cmax-Cmin)
+        
+            def __init__(self, CSDDF,source_or_sink):
+                self.df = CSDDF
+                if source_or_sink==1:
+                    self.CSD = self.df['Sinks']
+                else:
+                    self.CSD = self.df['Sources']
             
-            # convert to tensor
-            image = torch.Tensor(CSD_item).reshape(1, 101, 101)
-            
-            # get the label, in this case the label was noted in the name of the image file, ie: 1_image_28457.png where 1 is the label and the number at the end is just the id or something
-            if EPP <0.5:
-                curEPP = 0
-            elif 0.5<= EPP < 1: 
-                curEPP = 1
-            elif 1<= EPP < 1.5: 
-                curEPP = 2
-            elif 1.5<= EPP < 2: 
-                curEPP = 3
-            elif 2<= EPP < 2.5: 
-                curEPP = 4
-            elif 2.5<= EPP < 3: 
-                curEPP = 5
-            elif 3<= EPP < 3.5: 
-                curEPP = 6
-            elif EPP>=3.5: 
-                curEPP = 7
-            #target = int(image_file.split("_")[0])
-            target = torch.Tensor(curEPP)
+                self.EPP = self.df['EnergyPerPulse']
+            # get sample
+            def __getitem__(self, idx):
+                CSD_item = self.CSD[idx]
+                EPP = self.EPP[idx]
+                #scale data to 0 and 1
+                Cmin = np.min(CSD_item)
+                Cmax = np.max(CSD_item)
+                CSD_item = (CSD_item-Cmin)/(Cmax-Cmin)
+                
+                # convert to tensor
+                image = torch.Tensor(CSD_item).reshape(1, 101, 101)
+                
+                curEPP = self.df.labels[idx]
+                target = curEPP
 
-            return image, target
+                return image, target
 
-        def __len__(self):
-            return len(self.images)
+            def __len__(self):
+                return len(self.images)
 
 
     def train(model, data_loader, optimizer, device, epoch, writer):
@@ -114,8 +95,8 @@ if __name__ == "__main__":
         total_loss = 0
         for x, _ in data_loader:
             
-            #x = x.to(device).view(-1, 10201)
-            x = x.to(device).view(-1, 784)
+            x = x.to(device).view(-1, 10201)
+            #x = x.to(device).view(-1, 784)
             recon_x, mu, logvar = model(x)
             loss = lossfun(model, x, recon_x, mu, logvar)
             total_loss += loss.item()
@@ -133,8 +114,8 @@ if __name__ == "__main__":
         gain = torch.zeros((N_CLASSES, N_CLASSES), dtype=torch.int, device=device)
         with torch.no_grad():
             for xs, ts in data_loader:
-                #xs, ts = xs.to(device).view(-1, 10201), ts.to(device)
-                xs, ts = xs.to(device).view(-1, 784), ts.to(device)
+                xs, ts = xs.to(device).view(-1, 10201), ts.to(device)
+                #xs, ts = xs.to(device).view(-1, 784), ts.to(device)
                 ys = model.classify(xs)
                 for t, y in zip(ts, ys):
                     gain[t, y] += 1
@@ -183,13 +164,16 @@ if __name__ == "__main__":
         if_use_cuda = torch.cuda.is_available() and args.gpu >= 0
         device = torch.device('cuda:{}'.format(args.gpu) if if_use_cuda else 'cpu')
 
-        dataset = datasets.MNIST('./data', train=True, download=True,
-                                transform=transforms.ToTensor())
-        
-        #data_loader = CSD_Dataloader('CSDTrain.pkl',source_or_sink=0)
-        data_loader = torch.utils.data.DataLoader(
-            dataset, batch_size=args.batch_size, shuffle=True,
-            num_workers=1, pin_memory=if_use_cuda)
+        #dataset = datasets.MNIST('./data', train=True, download=True,
+                                #transform=transforms.ToTensor())
+        data = pd.read_pickle('CSDTrain.pkl')
+        data = addLabelsToDF(data)
+        dataset = CSDDataset(data, transform=transforms.ToTensor())
+        pdb.set_trace()
+        data_loader = CSD_Dataloader(data,source_or_sink=1)
+        #data_loader = torch.utils.data.DataLoader(
+            #dataset, batch_size=args.batch_size, shuffle=True,
+            #num_workers=1, pin_memory=if_use_cuda)
         
         # For plotting
         # plot_points = {}
@@ -205,8 +189,8 @@ if __name__ == "__main__":
         #     ts.append(t)
         # plot_points = (torch.cat(xs, dim=0), torch.cat(ts, dim=0))
 
-        #model = VaDE(N_CLASSES, 10201, 8)
-        model = VaDE(N_CLASSES, 784, 10)
+        model = VaDE(N_CLASSES, 10201, 8)
+        #model = VaDE(N_CLASSES, 784, 10)
         if args.pretrain:
             model.load_state_dict(torch.load(args.pretrain))
         model = model.to(device)

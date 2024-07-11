@@ -18,6 +18,7 @@ def _reparameterize(mu, logvar):
 
 
 class VaDE(torch.nn.Module):
+    
     """Variational Deep Embedding(VaDE).
 
     Args:
