@@ -43,17 +43,25 @@ if __name__ == "__main__":
         if __name__ == '__main__':
             def __init__(self, df, transform=None, target_transform=None):
                 self.df = df
-
+                self.root_dir = os.getcwd()
+                self.transform = transform
+                self.target_transform = target_transform
             def __len__(self):
                 return len(self.df)
 
             def __getitem__(self, idx):
                 #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
                 #image = read_image(img_path)
-                
+                if torch.is_tensor(idx):
+                    idx = idx.tolist()
                 label = self.df.labels.iloc[idx]
+                image = self.df.Sinks.iloc[idx]
+                Cmin = np.min(image)
+                Cmax = np.max(image)
+                image = (image-Cmin)/(Cmax-Cmin)
+                image = torch.Tensor(image).reshape(1, 101, 101)
                 if self.transform:
-                    image = self.transform(image).reshape(1,101,101)
+                    image = self.transform(image)
                 if self.target_transform:
                     label = self.target_transform(label)
                 return image, label
@@ -168,7 +176,8 @@ if __name__ == "__main__":
                                 #transform=transforms.ToTensor())
         data = pd.read_pickle('CSDTrain.pkl')
         data = addLabelsToDF(data)
-        dataset = CSDDataset(data, transform=transforms.ToTensor())
+        dataset = CSDDataset(data)
+        
         pdb.set_trace()
         #data_loader = CSD_Dataloader(data,source_or_sink=1)
         data_loader = torch.utils.data.DataLoader(
