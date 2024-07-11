@@ -170,10 +170,10 @@ if __name__ == "__main__":
         data = addLabelsToDF(data)
         dataset = CSDDataset(data, transform=transforms.ToTensor())
         pdb.set_trace()
-        data_loader = CSD_Dataloader(data,source_or_sink=1)
-        #data_loader = torch.utils.data.DataLoader(
-            #dataset, batch_size=args.batch_size, shuffle=True,
-            #num_workers=1, pin_memory=if_use_cuda)
+        #data_loader = CSD_Dataloader(data,source_or_sink=1)
+        data_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=args.batch_size, shuffle=True,
+            num_workers=1, pin_memory=if_use_cuda)
         
         # For plotting
         # plot_points = {}
