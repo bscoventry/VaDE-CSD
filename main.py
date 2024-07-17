@@ -1,19 +1,18 @@
-import os
-import numpy as np
-import torch
-import torchvision
 import argparse
-from collections import OrderedDict
-import pandas as pd
-from modules import transform, resnet, network
-from utils import yaml_config_hook
-from torch.utils import data
-import torch.utils.data.distributed
-from evaluation import evaluation
-from train import train_net
-from sklearn.model_selection import train_test_split
+import numpy as np
+import matplotlib.pyplot as plt
+from munkres import Munkres
+from sklearn.manifold import TSNE
+import torch
+import torch.utils.data
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
 from CSDDataset import CSDDataset
+from vade import VaDE, lossfun
+import pandas as pd
+import pdb
+N_CLASSES = 10
+PLOT_NUM_PER_CLASS = 128
 def addLabelsToDF(df):
     EPP = df.EnergyPerPulse.values
     nRows = len(EPP)
@@ -38,89 +37,122 @@ def addLabelsToDF(df):
     df['labels'] = labels
     return df
 
+def train(model, data_loader, optimizer, device, epoch, writer):
+    model.train()
+
+    total_loss = 0
+    for x, _ in data_loader:
+        x = x.to(device).view(-1, 10201)
+        recon_x, mu, logvar = model(x)
+        loss = lossfun(model, x, recon_x, mu, logvar)
+        total_loss += loss.item()
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    writer.add_scalar('Loss/train', total_loss / len(data_loader), epoch)
+
+
+def test(model, data_loader, device, epoch, writer, plot_points):
+    model.eval()
+
+    gain = torch.zeros((N_CLASSES, N_CLASSES), dtype=torch.int, device=device)
+    with torch.no_grad():
+        for xs, ts in data_loader:
+            xs, ts = xs.to(device).view(-1, 10201), ts.to(device)
+            ys = model.classify(xs)
+            for t, y in zip(ts, ys):
+                gain[t, y] += 1
+        cost = (torch.max(gain) - gain).cpu().numpy()
+        assign = Munkres().compute(cost)
+        acc = torch.sum(gain[tuple(zip(*assign))]).float() / torch.sum(gain)
+
+        # Plot latent space
+        xs, ts = plot_points[0].to(device), plot_points[1].numpy()
+        zs = model.encode(xs)[0].cpu().numpy()
+        tsne = TSNE(n_components=2, init='pca')
+        zs_tsne = tsne.fit_transform(zs)
+
+        fig, ax = plt.subplots()
+        cmap = plt.get_cmap("tab10")
+        for t in range(10):
+            points = zs_tsne[ts == t]
+            ax.scatter(points[:, 0], points[:, 1], color=cmap(t), label=str(t))
+        ax.legend()
+
+    writer.add_scalar('Acc/test', acc.item(), epoch)
+    writer.add_figure('LatentSpace', fig, epoch)
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    config = yaml_config_hook.yaml_config_hook("config/config.yaml")
-
-    for k, v in config.items():
-        parser.add_argument(f"--{k}", default=v, type=type(v))
+    parser = argparse.ArgumentParser(
+        description='Train VaDE with MNIST dataset',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--epochs', '-e',
+                        help='Number of epochs.',
+                        type=int, default=100)
+    parser.add_argument('--gpu', '-g',
+                        help='GPU id. (Negative number indicates CPU)',
+                        type=int, default=-1)
+    parser.add_argument('--learning-rate', '-l',
+                        help='Learning Rate.',
+                        type=float, default=0.0005)
+    parser.add_argument('--batch-size', '-b',
+                        help='Batch size.',
+                        type=int, default=1000)
+    parser.add_argument('--pretrain', '-p',
+                        help='Load parameters from pretrained model.',
+                        type=str, default=None)
     args = parser.parse_args()
-    if not os.path.exists(args.model_path):
-        os.makedirs(args.model_path)
 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    # prepare data---------------------------------------------------------------------------------------------------------------------------------------------------
-    #train data
+    if_use_cuda = torch.cuda.is_available() and args.gpu >= 0
+    device = torch.device('cuda:{}'.format(args.gpu) if if_use_cuda else 'cpu')
     data = pd.read_pickle('CSDTrain.pkl')
     data = addLabelsToDF(data)
-    train,test = train_test_split(data,test_size=0.1)
-    train_dataset = CSDDataset(data,transform=transforms.ToTensor())
-    # train_dataset = torchvision.datasets.CIFAR10(
-    #         root=args.dataset_dir,
-    #         download=True,
-    #         train=True,
-    #         transform=transform.Transforms(size=args.image_size, s=0.5),
-    #     )
-    # test_dataset = torchvision.datasets.CIFAR10(
-    #         root=args.dataset_dir,
-    #         download=True,
-    #         train=False,
-    #         transform=transform.Transforms(size=args.image_size, s=0.5),
-    #     )
-    #dataset = data.ConcatDataset([train_dataset, test_dataset])
-    data_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True,
-                                              pin_memory=True)
+    dataset = CSDDataset(data,transform=transforms.ToTensor())
+    #dataset = datasets.MNIST('./data', train=True, download=True,
+                             #transform=transforms.ToTensor())
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=args.batch_size, shuffle=True,
+        num_workers=2, pin_memory=if_use_cuda)
 
+    # For plotting
+    # plot_points = {}
+    # for t in range(8):
+    #     pdb.set_trace()
+    #     points = torch.cat([data for data, label in dataset if label == t])
+    #     points = points.view(-1, 10201)[:PLOT_NUM_PER_CLASS].to(device)
+    #     plot_points[t] = points
+    # xs = []
+    # ts = []
+    # for t, x in plot_points.items():
+    #     xs.append(x)
+    #     t = torch.full((x.size(0),), t, dtype=torch.long)
+    #     ts.append(t)
+    # plot_points = (torch.cat(xs, dim=0), torch.cat(ts, dim=0))
 
-    # test data
-    # test_dataset_1 = torchvision.datasets.CIFAR10(
-    #     root=args.dataset_dir,
-    #     download=True,
-    #     train=True,
-    #     transform=transform.Transforms(size=args.image_size).test_transform,
-    # )
-    # test_dataset_2 = torchvision.datasets.CIFAR10(
-    #     root=args.dataset_dir,
-    #     download=True,
-    #     train=False,
-    #     transform=transform.Transforms(size=args.image_size).test_transform,
-    # )
-    dataset_test = CSDDataset(test,transform=transforms.ToTensor())#data.ConcatDataset([test_dataset_1, test_dataset_2])
-    test_loader = torch.utils.data.DataLoader(
-        dataset=dataset_test,
-        batch_size=args.test_batch_size,
-        shuffle=False)
+    model = VaDE(N_CLASSES, 10201, 10)
+    if args.pretrain:
+        model.load_state_dict(torch.load(args.pretrain))
+    model = model.to(device)
 
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    # LR decreases every 10 epochs with a decay rate of 0.9
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=10, gamma=0.9)
 
-    # Initializing our network with a network trained with CC -------------------------------------------------------------------------------------------------------
-    res = resnet.get_resnet(args.resnet)
-    net = network.Network(res, args.feature_dim, args.class_num)
-    net = net.to('cuda')
-    checkpoint = torch.load('CIFAR_10_initial', map_location=torch.device('cuda:0'))
-    new_state_dict = OrderedDict()
-    for k, v in checkpoint['net'].items():
-        name = k[7:]  # remove `module.`
-        new_state_dict[name] = v
-    net.load_state_dict(new_state_dict)
+    # TensorBoard
+    writer = SummaryWriter()
 
-    # optimizer ---------------------------------------------------------------------------------------------------------------------------------------------
-    optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
+    for epoch in range(1, args.epochs + 1):
+        train(model, data_loader, optimizer, device, epoch, writer)
+        #test(model, data_loader, device, epoch, writer, plot_points)
+        lr_scheduler.step()
 
-    # train loop ---------------------------------------------------------------------------------------------------------------------------------------------------
-    for epoch in range(args.start_epoch, args.max_epochs):
+    writer.close()
+    pdb.set_trace()
+    torch.save(model.state_dict(), os.getcwd())
 
-        print("epoch:", epoch)
-        evaluation.net_evaluation(net,test_loader,args.dataset_size, args.test_batch_size)
-        net, optimizer = train_net(net, data_loader, optimizer, args.batch_size, args.zeta)
-
-        state = {'net': net.state_dict(), 'optimizer': optimizer.state_dict(), 'epoch': epoch}
-        with open('CIFAR_10_C3_loss_epoch_{}'.format(epoch), 'wb') as out:
-            torch.save(state, out)
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

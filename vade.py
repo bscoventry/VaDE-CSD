@@ -115,7 +115,7 @@ def lossfun(model, x, recon_x, mu, logvar):
         + torch.sum(gamma * torch.log(gamma + 1e-9)) \
         - 0.5 * torch.sum(1 + logvar)
 
-    pdb.set_trace()
+
     loss = loss / batch_size
     return loss
 
