@@ -63,6 +63,7 @@ class VaDE(torch.nn.Module):
         h = self.encoder(x)
         mu = self.encoder_mu(h)
         logvar = self.encoder_logvar(h)
+        
         return mu, logvar
 
     def decode(self, z):
@@ -77,7 +78,10 @@ class VaDE(torch.nn.Module):
 
     def classify(self, x, n_samples=8):
         with torch.no_grad():
-            mu, logvar = self.encode(x)
+            try:
+                mu, logvar = self.encode(x)
+            except:
+                pdb.set_trace()
             z = torch.stack(
                 [_reparameterize(mu, logvar) for _ in range(n_samples)], dim=1)
             z = z.unsqueeze(2)
@@ -90,12 +94,13 @@ class VaDE(torch.nn.Module):
             y = p_z_c / torch.sum(p_z_c, dim=2, keepdim=True)
             y = torch.sum(y, dim=1)
             pred = torch.argmax(y, dim=1)
+            
         return pred
 
 
 def lossfun(model, x, recon_x, mu, logvar):
     batch_size = x.size(0)
-
+    
     # Compute gamma ( q(c|x) )
     z = _reparameterize(mu, logvar).unsqueeze(1)
     h = z - model.mu
@@ -114,8 +119,6 @@ def lossfun(model, x, recon_x, mu, logvar):
         - torch.sum(gamma * torch.log(model.weights + 1e-9)) \
         + torch.sum(gamma * torch.log(gamma + 1e-9)) \
         - 0.5 * torch.sum(1 + logvar)
-
-
     loss = loss / batch_size
     return loss
 

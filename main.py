@@ -7,12 +7,17 @@ import torch
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
-from CSDDataset import CSDDataset
+import os
 from vade import VaDE, lossfun
 import pandas as pd
 import pdb
-N_CLASSES = 10
-PLOT_NUM_PER_CLASS = 128
+from torch.utils.data import Dataset
+from PIL import Image
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from CSDDataset import CSDDataset
+N_CLASSES = 8
+PLOT_NUM_PER_CLASS = 100
+
 def addLabelsToDF(df):
     EPP = df.EnergyPerPulse.values
     nRows = len(EPP)
@@ -37,12 +42,94 @@ def addLabelsToDF(df):
     df['labels'] = labels
     return df
 
+# class CSDDataset(Dataset):
+#     if __name__ == '__main__':
+#         def __init__(self, df, transform=None, target_transform=None):
+#             self.df = df
+#             self.root_dir = os.getcwd()
+#             self.transform = transform
+#             self.target_transform = target_transform
+#             self.data = self.df.Sinks
+#             self.targets = self.df.labels.values
+#         def __len__(self):
+#             return len(self.data)
+
+#         # def __getitem__(self, idx):
+#         #     #img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
+#         #     #image = read_image(img_path)
+#         #     if torch.is_tensor(idx):
+#         #         idx = idx.tolist()
+#         #     label = int(self.df.labels.iloc[idx])
+#         #     image = self.df.Sinks.iloc[idx]
+#         #     Cmin = np.min(image)
+#         #     Cmax = np.max(image)
+#         #     image = (image-Cmin)/(Cmax-Cmin)
+#         #     image = torch.Tensor(image).reshape(1, 101, 101)
+#         #     if self.transform:
+#         #         image = self.transform(image)
+#         #     if self.target_transform:
+#         #         label = self.target_transform(label)
+#         #     return image, label
+#         def __getitem__(self, index: int) -> Tuple[Any, Any]:
+#             """
+#             Args:
+#                 index (int): Index
+
+#             Returns:
+#                 tuple: (image, target) where target is index of the target class.
+#             """
+#             img, target = self.data[index], int(self.targets[index])
+            
+#             Cmin = np.min(img)
+#             Cmax = np.max(img)
+#             img = (img-Cmin)/(Cmax-Cmin)
+#             # doing this so that it is consistent with all other datasets
+#             # to return a PIL Image
+#             img = Image.fromarray(img, mode="L")
+
+#             if self.transform is not None:
+#                 img = self.transform(img)
+
+#             return img, target
+
+class CSD_Dataloader(torch.utils.data.Dataset):
+    
+        def __init__(self, CSDDF,source_or_sink):
+            self.df = CSDDF
+            if source_or_sink==1:
+                self.CSD = self.df['Sinks']
+            else:
+                self.CSD = self.df['Sources']
+        
+            self.EPP = self.df['EnergyPerPulse']
+        # get sample
+        def __getitem__(self, idx):
+            CSD_item = self.CSD[idx]
+            EPP = self.EPP[idx]
+            #scale data to 0 and 1
+            Cmin = np.min(CSD_item)
+            Cmax = np.max(CSD_item)
+            CSD_item = (CSD_item-Cmin)/(Cmax-Cmin)
+            
+            # convert to tensor
+            image = torch.Tensor(CSD_item).reshape(1, 101, 101)
+            
+            curEPP = self.df.labels[idx]
+            target = curEPP
+
+            return image, target
+
+        def __len__(self):
+            return len(self.images)
+
+
 def train(model, data_loader, optimizer, device, epoch, writer):
     model.train()
-
     total_loss = 0
     for x, _ in data_loader:
+        
         x = x.to(device).view(-1, 10201)
+        #x = x.to(device).view(-1, 784)
         recon_x, mu, logvar = model(x)
         loss = lossfun(model, x, recon_x, mu, logvar)
         total_loss += loss.item()
@@ -60,7 +147,9 @@ def test(model, data_loader, device, epoch, writer, plot_points):
     gain = torch.zeros((N_CLASSES, N_CLASSES), dtype=torch.int, device=device)
     with torch.no_grad():
         for xs, ts in data_loader:
+            
             xs, ts = xs.to(device).view(-1, 10201), ts.to(device)
+            #xs, ts = xs.to(device).view(-1, 784), ts.to(device)
             ys = model.classify(xs)
             for t, y in zip(ts, ys):
                 gain[t, y] += 1
@@ -70,6 +159,8 @@ def test(model, data_loader, device, epoch, writer, plot_points):
 
         # Plot latent space
         xs, ts = plot_points[0].to(device), plot_points[1].numpy()
+        
+        xs = xs.to(torch.float)
         zs = model.encode(xs)[0].cpu().numpy()
         tsne = TSNE(n_components=2, init='pca')
         zs_tsne = tsne.fit_transform(zs)
@@ -97,10 +188,10 @@ def main():
                         type=int, default=-1)
     parser.add_argument('--learning-rate', '-l',
                         help='Learning Rate.',
-                        type=float, default=0.0005)
+                        type=float, default=0.001)
     parser.add_argument('--batch-size', '-b',
                         help='Batch size.',
-                        type=int, default=1000)
+                        type=int, default=128)
     parser.add_argument('--pretrain', '-p',
                         help='Load parameters from pretrained model.',
                         type=str, default=None)
@@ -108,19 +199,21 @@ def main():
 
     if_use_cuda = torch.cuda.is_available() and args.gpu >= 0
     device = torch.device('cuda:{}'.format(args.gpu) if if_use_cuda else 'cpu')
+
+    dataset = datasets.MNIST('./data', train=True, download=True,
+                            transform=transforms.ToTensor())
     data = pd.read_pickle('CSDTrain.pkl')
     data = addLabelsToDF(data)
     dataset = CSDDataset(data,transform=transforms.ToTensor())
-    #dataset = datasets.MNIST('./data', train=True, download=True,
-                             #transform=transforms.ToTensor())
+    #data_loader = CSD_Dataloader(data,source_or_sink=1)
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=2, pin_memory=if_use_cuda)
-
+        num_workers=1, pin_memory=if_use_cuda)
+    #pdb.set_trace()
     # For plotting
-    # plot_points = {}
-    # for t in range(8):
-    #     pdb.set_trace()
+    #pdb.set_trace()
+    plot_points = {}
+    # for t in range(10):
     #     points = torch.cat([data for data, label in dataset if label == t])
     #     points = points.view(-1, 10201)[:PLOT_NUM_PER_CLASS].to(device)
     #     plot_points[t] = points
@@ -131,8 +224,34 @@ def main():
     #     t = torch.full((x.size(0),), t, dtype=torch.long)
     #     ts.append(t)
     # plot_points = (torch.cat(xs, dim=0), torch.cat(ts, dim=0))
-
-    model = VaDE(N_CLASSES, 10201, 10)
+    plot_points = {}
+    for ck in range(8):
+        CSDList = np.empty((PLOT_NUM_PER_CLASS,101,101),dtype=np.float64)
+        curCSD = data.Sinks.loc[data['labels']==ck].values
+        
+        pltNum = 0
+        if len(curCSD)>PLOT_NUM_PER_CLASS-1:
+            pltNum = PLOT_NUM_PER_CLASS
+        else:
+            pltNum = len(curCSD)
+        for bc in range(pltNum):
+            Cmin = np.min(curCSD[bc])
+            Cmax = np.max(curCSD[bc])
+            img = (curCSD[bc]-Cmin)/(Cmax-Cmin)
+            img = Image.fromarray(img, mode="L")
+            CSDList[bc,:,:] = img
+        curCSD = torch.from_numpy(CSDList)
+        curCSD = curCSD.view(-1, 10201).to(device)
+        plot_points[ck] = curCSD
+    xs = []
+    ts = []
+    for t, x in plot_points.items():
+        xs.append(x)
+        t = torch.full((x.size(0),), t, dtype=torch.long)
+        ts.append(t)
+    plot_points = (torch.cat(xs, dim=0), torch.cat(ts, dim=0))
+    model = VaDE(N_CLASSES, 10201, 8)
+    #model = VaDE(N_CLASSES, 784, 10)
     if args.pretrain:
         model.load_state_dict(torch.load(args.pretrain))
     model = model.to(device)
@@ -147,12 +266,12 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         train(model, data_loader, optimizer, device, epoch, writer)
-        #test(model, data_loader, device, epoch, writer, plot_points)
+        test(model, data_loader, device, epoch, writer, plot_points)
         lr_scheduler.step()
 
     writer.close()
     pdb.set_trace()
-    torch.save(model.state_dict(), os.getcwd())
+
 
 if __name__ == '__main__':
     main()
